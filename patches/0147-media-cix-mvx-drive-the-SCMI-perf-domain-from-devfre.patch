@@ -6,8 +6,13 @@ Subject: [PATCH] media: cix: mvx: drive the SCMI perf domain from devfreq
 mvx_devfreq_target() calls dev_pm_opp_set_rate(dev), and the OPP core
 binds the VPU's first clock (vpu_clk), so devfreq moved the clock between
 150 MHz and 1.2 GHz while the perf domain the driver attached to stayed at
-its lowest level. Find the perf domain's OPP and dev_pm_opp_set_opp() it,
-and skip requests for the level already set.
+its lowest level. Find the perf domain's OPP and request its level with
+dev_pm_domain_set_performance_state(), and skip requests for the level
+already set. dev_pm_opp_set_opp() on the perf domain's virtual device
+would also set vpu_clk, since that device shares the VPU's DT node: each
+level change then sent a redundant CLOCK_RATE_SET right after the
+PERF_LEVEL_SET, and now and then the firmware acked that pair ~15 ms late,
+after its delayed response ("Received valid OoO Delayed Response").
 
 mvx_devfreq_get_dev_status(), get_cur_freq() and target() also read the
 clock with clk_get_rate(). vpu_clk is an SCMI clock without a rate cache,
@@ -17,19 +22,21 @@ requests share. Report the frequency last set instead.
 On a Minisforum MS-R1 the perf domain now follows decode load (level 1200
 during decode, 0 before); four parallel 4K decodes (2x VP9, 2x H.264)
 ran at ~267 fps with no "Wait pending returned timeout" from the
-firmware; SCMI CLOCK_RATE_GET traffic fell from ~34/s at idle to none.
+firmware; SCMI CLOCK_RATE_GET traffic fell from ~34/s at idle to none. Over 90
+4K HEVC decodes the VPU made no CLOCK_RATE_SET requests and logged no
+out-of-order responses; vpu_clk still follows the level (300 MHz idle,
+1.2 GHz decoding) and decode speed is unchanged (~308 fps).
 
 Signed-off-by: hotschmoe <isaac@mass-engineering.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- drivers/media/platform/cix/dev/mvx_dev.c | 30 ++++++++++++++++++++----
- 1 file changed, 25 insertions(+), 5 deletions(-)
+ drivers/media/platform/cix/dev/mvx_dev.c | 35 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/media/platform/cix/dev/mvx_dev.c b/drivers/media/platform/cix/dev/mvx_dev.c
-index 16b794b23..97a4f4e5a 100755
 --- a/drivers/media/platform/cix/dev/mvx_dev.c
 +++ b/drivers/media/platform/cix/dev/mvx_dev.c
-@@ -142,6 +142,7 @@ struct mvx_dev_ctx {
+@@ -142,6 +142,7 @@
      struct device_link *opp_dl;
      struct devfreq_dev_profile devfreq_profile;
      struct devfreq *devfreq;
@@ -37,7 +44,7 @@ index 16b794b23..97a4f4e5a 100755
      unsigned long target_freq;
  };
  
-@@ -503,10 +504,27 @@ static int mvx_devfreq_target(struct device *dev, unsigned long *freq, u32 flags
+@@ -503,10 +504,32 @@
      }
      dev_pm_opp_put(opp);
  
@@ -52,14 +59,19 @@ index 16b794b23..97a4f4e5a 100755
 +     * dev_pm_opp_set_rate(dev) only sets vpu_clk: the OPP core takes the
 +     * device's first clock, and the SCMI perf domain (voltage and the
 +     * firmware's operating point) stays at its boot level. Request the perf
-+     * domain's OPP instead; the firmware sets the clock with it.
++     * domain's level instead; the firmware sets the clock with it.
++     *
++     * Not dev_pm_opp_set_opp(opp_pmdomain): the virtual device shares the
++     * VPU's DT node, so its OPP table holds vpu_clk too and every level
++     * change would be followed by a redundant SCMI CLOCK_RATE_SET.
 +     */
 +    opp = dev_pm_opp_find_freq_exact(ctx->opp_pmdomain, *freq, true);
 +    if (IS_ERR(opp)) {
 +        dev_err(dev, "No perf domain opp for %lu Hz\n", *freq);
 +        return PTR_ERR(opp);
 +    }
-+    ret = dev_pm_opp_set_opp(ctx->opp_pmdomain, opp);
++    ret = dev_pm_domain_set_performance_state(ctx->opp_pmdomain,
++                                              dev_pm_opp_get_level(opp));
 +    dev_pm_opp_put(opp);
 +    if (!ret) {
 +        ctx->cur_freq = *freq;
@@ -68,7 +80,7 @@ index 16b794b23..97a4f4e5a 100755
  
      MVX_LOG_PRINT(&mvx_log_dev, MVX_LOG_DEBUG, "%s() target=%ld, previous=%ld, current=%ld.",
                      __func__, target_freq, pre_freq, *freq);
-@@ -518,7 +536,9 @@ static int mvx_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
+@@ -518,7 +541,9 @@
  {
      struct mvx_dev_ctx *ctx = dev_get_drvdata(dev);
  
@@ -79,7 +91,7 @@ index 16b794b23..97a4f4e5a 100755
      MVX_LOG_PRINT(&mvx_log_dev, MVX_LOG_DEBUG, "%s() %ld", __func__, *freq);
  
      return 0;
-@@ -530,7 +550,7 @@ static int mvx_devfreq_get_dev_status(struct device *dev,
+@@ -530,7 +555,7 @@
      struct mvx_dev_ctx *ctx = dev_get_drvdata(dev);
  
      update_freq(ctx);
@@ -90,4 +102,3 @@ index 16b794b23..97a4f4e5a 100755
  
 -- 
 2.39.5
-
