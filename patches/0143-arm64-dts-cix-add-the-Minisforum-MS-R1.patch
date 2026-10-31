@@ -18,6 +18,9 @@ each read from the MS-R1's own ACPI tables (DSDT, SSDT1):
 - SBSA watchdog enabled: the firmware arms it before boot and the board
   resets 60 s later if nothing feeds it.
 - O6-only parts disabled: EC, cameras, touch panel, I2C HID, LEDs, rfkill.
+- PCIe domains numbered per controller (linux,pci-domain), so the domain
+  numbers, and the interface names built from them, do not depend on
+  probe order.
 
 Tested with this tree (6.18.14) on an MS-R1: boot from NVMe, both RTL8127
 NICs (10 Gb/s and 1 Gb/s), MT7922 Wi-Fi/Bluetooth bound, HDMI link trained
@@ -32,8 +35,8 @@ Signed-off-by: hotschmoe <isaac@mass-engineering.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  arch/arm64/boot/dts/cix/Makefile              |   1 +
- .../boot/dts/cix/sky1-minisforum-ms-r1.dts    | 352 ++++++++++++++++++
- 2 files changed, 353 insertions(+)
+ .../boot/dts/cix/sky1-minisforum-ms-r1.dts    | 378 ++++++++++++++++++
+ 2 files changed, 379 insertions(+)
  create mode 100644 arch/arm64/boot/dts/cix/sky1-minisforum-ms-r1.dts
 
 diff --git a/arch/arm64/boot/dts/cix/Makefile b/arch/arm64/boot/dts/cix/Makefile
@@ -50,7 +53,7 @@ new file mode 100644
 index 000000000..260d18857
 --- /dev/null
 +++ b/arch/arm64/boot/dts/cix/sky1-minisforum-ms-r1.dts
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,378 @@
 +// SPDX-License-Identifier: BSD-3-Clause
 +/*
 + * Minisforum MS-R1 (CIX CP8180 "Sky1", board P1WSB).
@@ -402,6 +405,32 @@ index 000000000..260d18857
 +&watchdog {
 +	compatible = "arm,sbsa-gwdt";
 +	status = "okay";
++};
++
++/*
++ * Without linux,pci-domain each host bridge takes the next free domain
++ * number in probe order, which changes from boot to boot, and the NIC and
++ * Wi-Fi names (enP<domain>p...) change with it. Number the domains after
++ * the controllers, as the pcie_rc aliases do.
++ */
++&pcie_x8_rc {
++	linux,pci-domain = <0>;
++};
++
++&pcie_x4_rc {
++	linux,pci-domain = <1>;
++};
++
++&pcie_x2_rc {
++	linux,pci-domain = <2>;
++};
++
++&pcie_x1_1_rc {
++	linux,pci-domain = <3>;
++};
++
++&pcie_x1_0_rc {
++	linux,pci-domain = <4>;
 +};
 -- 
 2.39.5
